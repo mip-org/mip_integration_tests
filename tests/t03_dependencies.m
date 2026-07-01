@@ -1,0 +1,41 @@
+% Integration test: dependency resolution and pruning.
+%
+% chunkie (mip-org/core) declares dependencies on fmm2d and flam. Installing
+% chunkie must pull both in; loading chunkie must put its code on the path;
+% uninstalling chunkie must prune the dependencies nothing else needs. fmm2d
+% ships a MEX, so this also exercises a pre-built binary loading in the
+% stripped (compiler-free) CI environment.
+
+pkg  = 'chunkie';
+deps = {'fmm2d', 'flam'};
+fprintf('== 03_dependencies (%s) ==\n', pkg);
+
+mip('install', pkg);
+
+% Every declared dependency must now be installed. resolve_to_installed errors
+% if a package is not installed, so a clean resolve IS the assertion.
+for i = 1:numel(deps)
+    r = mip.resolve.resolve_to_installed(deps{i});
+    assert(~isempty(r) && isfield(r, 'fqn'), ...
+        '03: dependency %s was not installed with %s', deps{i}, pkg);
+    fprintf('dependency present: %s -> %s\n', deps{i}, r.fqn);
+end
+
+% Loading chunkie must put its code on the path (its MEX dependency loads too).
+mip('load', pkg);
+assert(~isempty(which('chunkie')), '03: chunkie not on path after load');
+
+% Uninstalling chunkie prunes dependencies nothing else needs; resolving a
+% pruned dependency afterwards must fail.
+mip('unload', pkg);
+mip('uninstall', pkg);
+
+pruned = false;
+try
+    mip.resolve.resolve_to_installed('fmm2d');
+catch
+    pruned = true;
+end
+assert(pruned, '03: fmm2d was not pruned after uninstalling %s', pkg);
+
+fprintf('== 03 OK ==\n');

@@ -1,0 +1,293 @@
+name: Integration tests
+
+# Thorough end-to-end tests of "mip in the wild".
+#
+# Unlike the per-channel build tests (which install/load/test a freshly BUILT
+# .mhl before publishing it) and mip-org/mip's own unit/integration suite, this
+# repo tests what users actually get: the PUBLISHED mip and the PUBLISHED
+# mip-org/core packages, installed exactly as the website documents
+# (eval(webread('https://mip.sh/install.txt'))), running under the LATEST
+# MATLAB, on the three end-user platforms, with the build toolchain stripped
+# from the runner. A shipped binary that is not self-contained (needs a
+# compiler or a system runtime lib) fails to load here instead of silently
+# leaning on the runner's toolchain.
+#
+# One job per architecture. The test scripts under tests/ run sequentially,
+# each in its OWN fresh MATLAB process -- a clean slate: fresh userpath, mip
+# reinstalled from scratch. Runs daily and on manual dispatch.
+
+on:
+  schedule:
+    # 08:00 UTC daily, after the channels' 06:00 UTC scheduled rebuild, so we
+    # test the freshly (re)published channel.
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: linux_x86_64
+            runner: ubuntu-latest
+          - arch: macos_arm64
+            runner: macos-latest
+          - arch: windows_x86_64
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    # The sweep (tests/04) installs and tests every core package one by one; give
+    # it plenty of head-room without letting a hang burn a full 6h.
+    timeout-minutes: 330
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up MATLAB (latest)
+        # No `release:` pin -> newest available MATLAB. These tests target what
+        # a current user runs, not the oldest-supported build ABI the channels
+        # pin for forward portability.
+        uses: matlab-actions/setup-matlab@v3
+        with:
+          cache: true
+
+      # -------------------------------------------------------------------
+      # Strip the build toolchain from the runner.
+      #
+      # Mirrors the channels' package build test (mip_channel_tools
+      # build-package.yml, test-and-upload job): exercise the published binaries
+      # with NO compiler / build runtime present, so a MEX (or bundled .so) that
+      # is not self-contained fails to load here rather than passing on a
+      # toolchain the end user won't have. Patterns intentionally spare the
+      # essential runtimes MATLAB itself needs (libstdc++6, libgcc-s1, libc6).
+      # -------------------------------------------------------------------
+
+      - name: Strip build environment (Linux)
+        if: matrix.arch == 'linux_x86_64'
+        shell: bash
+        run: |
+          # Bypass apt's resolver: enumerate installed toolchain packages and
+          # let dpkg purge them with --force-depends. The resolver rejects our
+          # purge sets because some toolchain packages have reverse-dep chains
+          # into essentials (libgcc-s1, libssl3t64, etc.). --force-depends
+          # ignores those checks and removes the named packages anyway; the
+          # resulting dpkg state is inconsistent but the runner is thrown away
+          # after this job.
+          #
+          # Patterns are anchored with ^...$ so partial matches don't slip in.
+          # They intentionally exclude libstdc++6, libgcc-s1, libc6 (essential
+          # runtimes that MATLAB and the runner itself need).
+          PURGE_RE='^(gcc.*|g\+\+.*|gfortran.*|clang.*|libclang.*|llvm.*|libllvm.*|lld.*|libomp.*|libgfortran.*|libgomp.*|libquadmath.*|libatomic.*|libitm.*|libasan.*|libubsan.*|liblsan.*|libtsan.*|libcc1.*|libssp.*|libstdc\+\+-.*-dev|libgcc-.*-dev|make|ninja-build|patchelf|build-essential|binutils.*|libbinutils.*|libctf.*|libgprofng.*|autoconf|automake|libtool|pkg-config|pkgconf.*|bison|flex|m4|cmake.*)$'
+
+          PKGS=$(dpkg-query -W --showformat='${Package}\n' 2>/dev/null | grep -E "$PURGE_RE" || true)
+
+          if [ -n "$PKGS" ]; then
+            echo "Purging $(echo "$PKGS" | wc -l) packages via dpkg --force-depends:"
+            echo "$PKGS" | sed 's/^/  /'
+            sudo dpkg --purge --force-depends $PKGS || true
+          fi
+
+          # Non-apt installs added by the runner-image setup (newer than apt):
+          sudo rm -rf /usr/local/bin/cmake /usr/local/bin/ctest /usr/local/bin/cpack \
+                      /usr/local/share/cmake-* /usr/local/doc/cmake* \
+                      /usr/local/man/man1/cmake.1.gz /usr/local/man/man1/ctest.1.gz \
+                      /usr/local/man/man1/cpack.1.gz /usr/local/man/man7/cmake-* \
+                      /usr/local/bin/ninja
+
+          # Linuxbrew tree (preinstalled but not on PATH; wipe anyway)
+          sudo rm -rf /home/linuxbrew
+
+          # Refresh the linker cache so removed .so files don't linger
+          sudo ldconfig
+
+      - name: Verify strip (Linux)
+        if: matrix.arch == 'linux_x86_64'
+        shell: bash
+        run: |
+          leaked=0
+          for c in gcc g++ gfortran cc c++ clang ld as cmake patchelf; do
+            if command -v "$c" >/dev/null 2>&1; then
+              echo "::error::Leaked binary: $c at $(command -v "$c")"
+              leaked=1
+            fi
+          done
+          for lib in libgfortran libgomp libquadmath; do
+            if /sbin/ldconfig -p 2>/dev/null | grep -q "$lib"; then
+              hits=$(/sbin/ldconfig -p 2>/dev/null | grep "$lib" | tr -s ' ' || true)
+              echo "::error::Leaked runtime lib $lib:"
+              echo "$hits"
+              leaked=1
+            fi
+          done
+          if [ "$leaked" -ne 0 ]; then
+            echo "Strip did not remove expected toolchain; aborting before tests." >&2
+            exit 1
+          fi
+          echo "Strip OK: no compiler binaries or runtime libs on the linker path."
+
+      - name: Strip build environment (macOS)
+        if: matrix.arch == 'macos_arm64'
+        shell: bash
+        run: |
+          # Rename rather than rm -rf: an APFS rename is a metadata-only op
+          # (~ms), while rm -rf walks 100k+ files in Xcode/Homebrew and takes
+          # ~3 min. The runner is ephemeral so leaving the bytes on disk is
+          # fine; the tests only need the paths unfindable by the linker/loader.
+          for d in /Applications/Xcode*.app; do
+            [ -e "$d" ] || continue
+            sudo mv "$d" "${d}.deleted"
+          done
+          if [ -e /Library/Developer ]; then
+            sudo mv /Library/Developer /Library/Developer.deleted
+          fi
+          if [ -e ~/Library/Developer ]; then
+            sudo mv ~/Library/Developer ~/Library/Developer.deleted
+          fi
+          sudo pkgutil --forget com.apple.pkg.CLTools_Executables 2>/dev/null || true
+          sudo pkgutil --forget com.apple.pkg.CLTools_SDK_macOS 2>/dev/null || true
+          sudo pkgutil --forget com.apple.pkg.DeveloperToolsCLI 2>/dev/null || true
+          sudo xcode-select --reset 2>/dev/null || true
+          if [ -e /opt/homebrew ]; then
+            sudo mv /opt/homebrew /opt/homebrew.deleted
+          fi
+
+      - name: Strip build environment (Windows)
+        if: matrix.arch == 'windows_x86_64'
+        shell: pwsh
+        run: |
+          # Rename rather than uninstall/rm: an NTFS directory rename within the
+          # same volume is a metadata-only op (~ms), while uninstalling VS and
+          # recursively deleting the msys64/Strawberry/VS trees takes ~4 min.
+          # The runner is ephemeral, so leaving the bytes on disk is fine; the
+          # tests only need the toolchain paths unfindable by the linker/loader.
+          # Renaming also sidesteps per-file locked-file failures that stall
+          # Remove-Item.
+          #
+          # NB: do NOT strip "C:\Program Files\Git\mingw64". Git for Windows'
+          # bin\bash.exe and bin\git.exe are thin wrappers that exec the real
+          # binaries under that tree; renaming it breaks the `shell: bash` step
+          # that runs the tests. It holds no build toolchain anyway.
+          $paths = @(
+            "C:\Program Files\Microsoft Visual Studio",
+            "C:\Program Files (x86)\Microsoft Visual Studio",
+            "C:\Program Files (x86)\Windows Kits",
+            "C:\Program Files\LLVM",
+            "C:\Strawberry",
+            "C:\msys64",
+            "C:\mingw64",
+            "C:\ProgramData\chocolatey",
+            "C:\Program Files\CMake"
+          )
+          # Fast path: [IO.Directory]::Move (Win32 MoveFile) is a metadata-only
+          # same-volume rename (~ms). It fails (ACCESS_DENIED) while ANY process
+          # holds a handle anywhere under the tree -- on a fresh runner that pin
+          # is transient (a Defender scan, ngen, a VS background service), so
+          # retry against a shared 60s budget before falling back to Move-Item
+          # (a recursive copy+delete on a pinned tree). "Verify strip" below is
+          # the hard gate either way.
+          $deadline = [DateTime]::UtcNow.AddSeconds(60)
+          foreach ($p in $paths) {
+            if (-not (Test-Path $p)) { continue }
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $err = $null
+            while ($true) {
+              try { [System.IO.Directory]::Move($p, "$p.deleted"); break }
+              catch {
+                $err = $_
+                if ([DateTime]::UtcNow -ge $deadline) { break }
+                Start-Sleep -Seconds 2
+                $err = $null
+              }
+            }
+            if ($null -eq $err) {
+              Write-Host ("  renamed ({0:n1}s): {1}" -f $sw.Elapsed.TotalSeconds, $p)
+            } else {
+              Write-Host ("  rename still blocked after {0:n1}s ({1}); Move-Item fallback: {2}" -f `
+                $sw.Elapsed.TotalSeconds, $err.Exception.Message, $p)
+              Move-Item -Force -ErrorAction SilentlyContinue $p "$p.deleted"
+            }
+          }
+
+      - name: Verify strip (Windows)
+        if: matrix.arch == 'windows_x86_64'
+        shell: pwsh
+        run: |
+          # Hard gate on the rename-based strip above. If a rename silently
+          # failed (e.g. a locked VS service handle), a compiler/linker would
+          # still be findable under one of the stripped roots and a package that
+          # secretly needs a toolchain would falsely pass. Fail loudly here.
+          #
+          # Filter found binaries by resolved path under a stripped root, not by
+          # bare name: names like `link` collide with benign tools (Git for
+          # Windows ships GNU coreutils `link.exe`). Only a sentinel resolving
+          # *inside* a dir we renamed means the strip actually failed.
+          $strippedRoots = @(
+            "C:\Program Files\Microsoft Visual Studio",
+            "C:\Program Files (x86)\Microsoft Visual Studio",
+            "C:\Program Files (x86)\Windows Kits",
+            "C:\Program Files\LLVM",
+            "C:\Strawberry",
+            "C:\msys64",
+            "C:\mingw64",
+            "C:\Program Files\CMake"
+          )
+          $leaked = @()
+          foreach ($exe in 'cl','link','gcc','g++','gfortran','clang','ld') {
+            foreach ($c in (Get-Command $exe -All -ErrorAction SilentlyContinue)) {
+              $src = $c.Source
+              if (-not $src) { continue }
+              foreach ($root in $strippedRoots) {
+                # Trailing separator so "C:\msys64.deleted\..." (the renamed
+                # tree) doesn't match the "C:\msys64" root.
+                if ($src.StartsWith($root + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+                  $leaked += "$exe -> $src"
+                }
+              }
+            }
+          }
+          if ($leaked.Count -gt 0) {
+            Write-Output "::error::Strip left toolchain binaries findable:"
+            $leaked | ForEach-Object { Write-Output "  $_" }
+            Write-Output "Strip did not remove expected toolchain; aborting before tests."
+            exit 1
+          }
+          Write-Output "Strip OK: no compiler/linker binaries under stripped roots."
+
+      # -------------------------------------------------------------------
+      # Run the integration test scripts, sequentially, each in its own fresh
+      # MATLAB process. Gate on the per-script marker file (not MATLAB's exit
+      # code) so a cosmetic exit-time crash after a passing run (e.g. the known
+      # macOS arm64 shutdown SIGSEGV) is not counted as a failure.
+      # -------------------------------------------------------------------
+      - name: Run integration tests
+        shell: bash
+        run: |
+          set -uo pipefail
+          fail=0
+          for f in tests/*.m; do
+            name=$(basename "$f")
+            marker="${name}.pass"
+            rm -f "$marker"
+            echo "::group::$name"
+            # A newline on stdin makes the website installer's location prompt
+            # take its default (<userpath>/mip); run_one has set a fresh, unique
+            # userpath so that default is clean. `|| true`: the marker, checked
+            # next, is the real gate.
+            printf '\n' | env PASS_MARKER="$marker" matlab -batch "addpath('scripts'); run_one('$f')" || true
+            if [ -f "$marker" ]; then
+              echo "PASS: $name"
+            else
+              echo "::error::FAIL: $name"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "One or more integration test scripts failed."
+            exit 1
+          fi
+          echo "All integration test scripts passed."
