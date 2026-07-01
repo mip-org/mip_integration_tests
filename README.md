@@ -47,7 +47,10 @@ This repo does not build or publish anything. Each run:
   each script by name — a digit-first filename is not a valid script name.)
 - `scripts/run_one.m` — the per-script harness CI invokes once per test, in a
   fresh MATLAB process: fresh `userpath`, install mip from the wild, run the
-  script, write a success marker.
+  script, write a success marker. Because `matlab -batch` has no interactive
+  input, it briefly shadows `input` with `scripts/prompt_stub/input.m` so the
+  installer's one location prompt takes its default — the same as a user
+  pressing Enter.
 - `.github/workflows/integration-tests.yml` — one job per architecture
   (`linux_x86_64`, `macos_arm64`, `windows_x86_64`); scripts run sequentially.
   Scheduled daily at 08:00 UTC and on manual dispatch.

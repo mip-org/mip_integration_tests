@@ -34,8 +34,17 @@ mkdir(freshUserpath);
 userpath(freshUserpath);
 fprintf('userpath set to fresh directory: %s\n', freshUserpath);
 
-% (2) Install mip exactly as the website instructs.
+% (2) Install mip exactly as the website instructs. The installer prompts once
+%     for the install location and takes the default (<userpath>/mip) on an
+%     empty answer. MATLAB's builtin input() cannot run under -batch, so shadow
+%     it with a stub returning '' -- the documented "press Enter for the
+%     default" answer -- for the duration of the install only.
+stubDir = fullfile(fileparts(mfilename('fullpath')), 'prompt_stub');
+addpath(stubDir);
+rehash;
 install_mip_from_wild();
+rmpath(stubDir);
+rehash;
 if isempty(which('/mip'))
     error('mip:integration:notInstalled', ...
         'The website installer did not put mip on the path.');
