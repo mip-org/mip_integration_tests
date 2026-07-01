@@ -40,11 +40,13 @@ fprintf('userpath set to fresh directory: %s\n', freshUserpath);
 %     it with a stub returning '' -- the documented "press Enter for the
 %     default" answer -- for the duration of the install only.
 stubDir = fullfile(fileparts(mfilename('fullpath')), 'prompt_stub');
+warnState = warning('off', 'MATLAB:dispatcher:nameConflict');  % shadowing input() is intentional
 addpath(stubDir);
 rehash;
 install_mip_from_wild();
 rmpath(stubDir);
 rehash;
+warning(warnState);
 if isempty(which('/mip'))
     error('mip:integration:notInstalled', ...
         'The website installer did not put mip on the path.');

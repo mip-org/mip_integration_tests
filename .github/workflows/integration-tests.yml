@@ -80,8 +80,14 @@ jobs:
           #
           # Patterns are anchored with ^...$ so partial matches don't slip in.
           # They intentionally exclude libstdc++6, libgcc-s1, libc6 (essential
-          # runtimes that MATLAB and the runner itself need).
-          PURGE_RE='^(gcc.*|g\+\+.*|gfortran.*|clang.*|libclang.*|llvm.*|libllvm.*|lld.*|libomp.*|libgfortran.*|libgomp.*|libquadmath.*|libatomic.*|libitm.*|libasan.*|libubsan.*|liblsan.*|libtsan.*|libcc1.*|libssp.*|libstdc\+\+-.*-dev|libgcc-.*-dev|make|ninja-build|patchelf|build-essential|binutils.*|libbinutils.*|libctf.*|libgprofng.*|autoconf|automake|libtool|pkg-config|pkgconf.*|bison|flex|m4|cmake.*)$'
+          # runtimes that MATLAB and the runner itself need). libatomic is also
+          # excluded: unlike the channels' build test (older MATLAB), MATLAB
+          # 2026.1's System-object subsystem (libmwsystemobject_mcos ->
+          # mwsystemobject_mcos_builtinimpl.so) loads libatomic.so.1 at RUNTIME,
+          # so purging it breaks any package whose test touches a matlab.System
+          # class (e.g. matlab-progress-bar). It is a MATLAB runtime dep, not a
+          # build-only toolchain lib.
+          PURGE_RE='^(gcc.*|g\+\+.*|gfortran.*|clang.*|libclang.*|llvm.*|libllvm.*|lld.*|libomp.*|libgfortran.*|libgomp.*|libquadmath.*|libitm.*|libasan.*|libubsan.*|liblsan.*|libtsan.*|libcc1.*|libssp.*|libstdc\+\+-.*-dev|libgcc-.*-dev|make|ninja-build|patchelf|build-essential|binutils.*|libbinutils.*|libctf.*|libgprofng.*|autoconf|automake|libtool|pkg-config|pkgconf.*|bison|flex|m4|cmake.*)$'
 
           PKGS=$(dpkg-query -W --showformat='${Package}\n' 2>/dev/null | grep -E "$PURGE_RE" || true)
 
@@ -312,21 +318,29 @@ jobs:
           command: "addpath('scripts'); run_one('tests/t04_all_core_packages.m')"
 
       - name: Check results
+        if: always()
         shell: bash
         run: |
           set -uo pipefail
           fail=0
+          echo "## Integration tests — ${{ matrix.arch }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| script | result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- |" >> "$GITHUB_STEP_SUMMARY"
           for f in tests/*.m; do
             name=$(basename "$f")
             if [ -f "${name}.pass" ]; then
               echo "PASS: $name"
+              echo "| \`$name\` | ✅ pass |" >> "$GITHUB_STEP_SUMMARY"
             else
               echo "::error::FAIL: $name (no pass marker -- failed, or missing a run-command step)"
+              echo "| \`$name\` | ❌ FAIL |" >> "$GITHUB_STEP_SUMMARY"
               fail=1
             fi
           done
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ "$fail" -ne 0 ]; then
-            echo "One or more integration test scripts failed."
+            echo "One or more integration test scripts failed (see the per-script logs above; the all-core sweep lists the specific packages)."
             exit 1
           fi
           echo "All integration test scripts passed."

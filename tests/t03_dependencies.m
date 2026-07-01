@@ -21,9 +21,14 @@ for i = 1:numel(deps)
     fprintf('dependency present: %s -> %s\n', deps{i}, r.fqn);
 end
 
-% Loading chunkie must put its code on the path (its MEX dependency loads too).
+% Loading chunkie (and its MEX dependency) must register as loaded. We check
+% mip's own loaded-package state rather than which('chunkie'): the package name
+% is not a function name -- chunkie exports @chunker, chunkerfunc, ... -- so a
+% which() on the bare package name would be empty even when correctly loaded.
 mip('load', pkg);
-assert(~isempty(which('chunkie')), '03: chunkie not on path after load');
+loaded = mip.state.key_value_get('MIP_LOADED_PACKAGES');
+assert(any(contains(loaded, 'chunkie')), '03: chunkie not loaded after mip load');
+assert(any(contains(loaded, 'fmm2d')),   '03: fmm2d dependency not loaded with chunkie');
 
 % Uninstalling chunkie prunes dependencies nothing else needs; resolving a
 % pruned dependency afterwards must fail.

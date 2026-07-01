@@ -70,13 +70,51 @@ for i = 1:numel(names)
 end
 
 nFail = size(failures, 1);
-fprintf('\n===== Sweep summary: %d/%d passed =====\n', numel(names) - nFail, numel(names));
+nPass = numel(names) - nFail;
+fprintf('\n===== Sweep summary: %d/%d passed on %s =====\n', nPass, numel(names), currentArch);
+for i = 1:nFail
+    fprintf(2, '  FAILED: %s -- %s\n', failures{i, 1}, failures{i, 2});
+end
+
+% Surface the result on the GitHub job-summary page (not just the step log), so
+% which packages failed is visible without digging through the raw log.
+report_to_job_summary(currentArch, names, failures);
+
 if nFail > 0
-    for i = 1:nFail
-        fprintf(2, '  FAILED: %s -- %s\n', failures{i, 1}, failures{i, 2});
-    end
     error('mip:integration:sweepFailed', ...
-        '%d of %d mip-org/core packages failed on %s', nFail, numel(names), currentArch);
+        '%d of %d mip-org/core packages failed on %s: %s', ...
+        nFail, numel(names), currentArch, strjoin(failures(:, 1)', ', '));
 end
 
 fprintf('== 04 OK ==\n');
+
+
+function report_to_job_summary(currentArch, names, failures)
+% Append a Markdown summary of the sweep to $GITHUB_STEP_SUMMARY when running
+% in GitHub Actions (a no-op locally, where the env var is unset).
+    summaryFile = getenv('GITHUB_STEP_SUMMARY');
+    if isempty(summaryFile)
+        return
+    end
+    fid = fopen(summaryFile, 'a');
+    if fid == -1
+        return
+    end
+    closer = onCleanup(@() fclose(fid));
+    nFail = size(failures, 1);
+    if nFail == 0
+        fprintf(fid, '### All-core sweep (%s): all %d packages passed\n\n', ...
+            currentArch, numel(names));
+        return
+    end
+    fprintf(fid, '### All-core sweep (%s): %d/%d passed, %d FAILED\n\n', ...
+        currentArch, numel(names) - nFail, numel(names), nFail);
+    fprintf(fid, '| package | error |\n| --- | --- |\n');
+    for i = 1:nFail
+        % One-line, pipe-escaped so the Markdown table stays intact.
+        msg = regexprep(failures{i, 2}, '\s+', ' ');
+        msg = strrep(msg, '|', '\|');
+        fprintf(fid, '| `%s` | %s |\n', failures{i, 1}, msg);
+    end
+    fprintf(fid, '\n');
+end
