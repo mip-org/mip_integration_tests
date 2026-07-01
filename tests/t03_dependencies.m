@@ -30,17 +30,14 @@ loaded = mip.state.key_value_get('MIP_LOADED_PACKAGES');
 assert(any(contains(loaded, 'chunkie')), '03: chunkie not loaded after mip load');
 assert(any(contains(loaded, 'fmm2d')),   '03: fmm2d dependency not loaded with chunkie');
 
-% Uninstalling chunkie prunes dependencies nothing else needs; resolving a
-% pruned dependency afterwards must fail.
+% Uninstalling chunkie prunes dependencies nothing else needs. The pruned
+% dependency must no longer resolve to an installed package. Note:
+% resolve_to_installed returns [] for a not-installed package -- it does NOT
+% error -- so test for an empty result, not a thrown exception.
 mip('unload', pkg);
 mip('uninstall', pkg);
 
-pruned = false;
-try
-    mip.resolve.resolve_to_installed('fmm2d');
-catch
-    pruned = true;
-end
-assert(pruned, '03: fmm2d was not pruned after uninstalling %s', pkg);
+assert(isempty(mip.resolve.resolve_to_installed('fmm2d')), ...
+    '03: fmm2d was not pruned after uninstalling %s', pkg);
 
 fprintf('== 03 OK ==\n');
