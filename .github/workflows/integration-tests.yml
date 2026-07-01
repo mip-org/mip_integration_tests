@@ -259,32 +259,71 @@ jobs:
 
       # -------------------------------------------------------------------
       # Run the integration test scripts, sequentially, each in its own fresh
-      # MATLAB process. Gate on the per-script marker file (not MATLAB's exit
-      # code) so a cosmetic exit-time crash after a passing run (e.g. the known
-      # macOS arm64 shutdown SIGSEGV) is not counted as a failure.
+      # MATLAB process, via matlab-actions/run-command. That action is what
+      # provides MATLAB licensing for public repos -- a bare `matlab -batch` in
+      # a shell step runs UNLICENSED and fails ("license checkout failed"), so
+      # every script must go through the action, one step per script.
+      #
+      # Each step is `continue-on-error: true` and run_one writes a per-script
+      # <name>.pass marker only on success; the final "Check results" step is
+      # the real gate. This (a) lets every script run even if an earlier one
+      # fails -- we want the full picture, like the package sweep does -- and
+      # (b) tolerates a cosmetic exit-time crash after a passing run (the known
+      # macOS arm64 shutdown SIGSEGV) without counting it as a failure.
+      #
+      # To add a test: drop tests/tNN_*.m AND add a run-command step for it
+      # below (the gate enumerates tests/*.m, so a script with no step and thus
+      # no marker fails the job by design).
       # -------------------------------------------------------------------
-      - name: Run integration tests
+      - name: Clear stale markers
+        shell: bash
+        run: rm -f ./*.pass
+
+      - name: 't01 install and info'
+        continue-on-error: true
+        uses: matlab-actions/run-command@v3
+        env:
+          PASS_MARKER: t01_install_and_info.m.pass
+        with:
+          command: "addpath('scripts'); run_one('tests/t01_install_and_info.m')"
+
+      - name: 't02 package lifecycle'
+        continue-on-error: true
+        uses: matlab-actions/run-command@v3
+        env:
+          PASS_MARKER: t02_package_lifecycle.m.pass
+        with:
+          command: "addpath('scripts'); run_one('tests/t02_package_lifecycle.m')"
+
+      - name: 't03 dependencies'
+        continue-on-error: true
+        uses: matlab-actions/run-command@v3
+        env:
+          PASS_MARKER: t03_dependencies.m.pass
+        with:
+          command: "addpath('scripts'); run_one('tests/t03_dependencies.m')"
+
+      - name: 't04 all core packages'
+        continue-on-error: true
+        uses: matlab-actions/run-command@v3
+        env:
+          PASS_MARKER: t04_all_core_packages.m.pass
+        with:
+          command: "addpath('scripts'); run_one('tests/t04_all_core_packages.m')"
+
+      - name: Check results
         shell: bash
         run: |
           set -uo pipefail
           fail=0
           for f in tests/*.m; do
             name=$(basename "$f")
-            marker="${name}.pass"
-            rm -f "$marker"
-            echo "::group::$name"
-            # A newline on stdin makes the website installer's location prompt
-            # take its default (<userpath>/mip); run_one has set a fresh, unique
-            # userpath so that default is clean. `|| true`: the marker, checked
-            # next, is the real gate.
-            printf '\n' | env PASS_MARKER="$marker" matlab -batch "addpath('scripts'); run_one('$f')" || true
-            if [ -f "$marker" ]; then
+            if [ -f "${name}.pass" ]; then
               echo "PASS: $name"
             else
-              echo "::error::FAIL: $name"
+              echo "::error::FAIL: $name (no pass marker -- failed, or missing a run-command step)"
               fail=1
             fi
-            echo "::endgroup::"
           done
           if [ "$fail" -ne 0 ]; then
             echo "One or more integration test scripts failed."

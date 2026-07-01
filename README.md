@@ -54,10 +54,19 @@ This repo does not build or publish anything. Each run:
 
 ## Adding a test
 
-Drop a new `tNN_description.m` in `tests/` (start the name with a letter — it is
-run by name). It runs automatically, in filename order.
-Assume `mip` is on the path; assert your expectations and let any failure raise
-an error. Keep each script self-contained — it gets a clean slate.
+1. Drop a new `tNN_description.m` in `tests/` — start the name with a letter
+   (MATLAB runs each script by name; a digit-first name is invalid).
+2. Add a matching `matlab-actions/run-command` step for it in
+   `.github/workflows/integration-tests.yml` (with its `PASS_MARKER`). Each
+   script runs in its own MATLAB process **through that action** — the action
+   is what licenses MATLAB on public repos; a bare `matlab -batch` in a shell
+   step runs unlicensed. The `Check results` gate enumerates `tests/*.m`, so a
+   script with no step (hence no pass marker) fails the job by design — a
+   reminder to wire it up.
+
+Assume `mip` is on the path (the runner installs it first); assert your
+expectations and let any failure raise an error. Keep each script
+self-contained — it gets a clean slate.
 
 ## Running one locally
 

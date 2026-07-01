@@ -25,11 +25,18 @@ Distinct from the other test layers:
   test-and-upload job). The point is to catch a shipped binary that is not
   self-contained. If you touch the strip steps, keep them in sync with that
   source and keep the `Verify strip` gates.
-- **Clean slate per script.** Each `tests/*.m` runs in its OWN `matlab -batch`
-  process via `scripts/run_one.m`, which points `userpath` at a fresh temp dir
-  and reinstalls mip from the wild. Do not merge scripts into one process — a
-  loaded MEX can't be reliably deleted on Windows (see the MEX-lock notes in
-  mip-org), and fresh processes sidestep that.
+- **Licensed via the action.** MATLAB is licensed on public repos by
+  `matlab-actions/run-command` (its batch-licensing), NOT by having `matlab` on
+  PATH. A bare `matlab -batch` in a shell step runs UNLICENSED and fails. So
+  every script runs through a `run-command` step — one step per script — and
+  each also reinstalls mip from the wild, so it can't merge into one MATLAB
+  process anyway (install.txt aborts if mip is already on the path).
+- **Clean slate per script.** Each `tests/*.m` runs in its own MATLAB process
+  via `scripts/run_one.m`, which points `userpath` at a fresh temp dir and
+  reinstalls mip from the wild. A persistent userpath means each script MUST
+  override it (the installer aborts if `<userpath>/mip` already exists from an
+  earlier script on the same runner). Fresh processes also sidestep the Windows
+  MEX-lock problem (a loaded MEX can't be reliably deleted).
 - **Marker-gated pass.** CI checks the per-script `<name>.pass` marker that
   run_one writes on success, NOT MATLAB's exit code, so a cosmetic exit-time
   crash after a passing run (known macOS arm64 shutdown SIGSEGV) is tolerated.
